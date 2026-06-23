@@ -1,19 +1,17 @@
-FROM alpine:latest
+FROM node:18-alpine
 
-# ۱. نصب ابزارهای پایه برای دانلود و اجرای اسکریپت شل شما
+# ۱. نصب ابزارهای لینوکسی مورد نیاز اسکریپت
 RUN apk add --no-cache curl bash tar
 
 WORKDIR /app
 
-# ۲. اجرای مستقیم همان اسکریپت گیت‌هاب که فرستادی
-# این خط اسکریپت را دانلود کرده و کدهای پایه را نصب می‌کند
+# ۲. اجرای مستقیم اسکریپت گیت‌هاب در محیطی که Node و NPM کاملاً آماده هستن
 RUN curl -L -s https://raw.githubusercontent.com/byJoey/idx-free/refs/heads/main/install.sh -o install.sh && \
     bash install.sh
 
-# ۳. باز کردن پورت ۳۰۰۰ برای اتصال کلاینت گوشی شما
+# ۳. باز کردن پورت ۳۰۰۰ کانتینر
 EXPOSE 3000
 
-# ۴. دستور نهایی برای تنظیم خودکار پورت و استارت هسته پروکسی
-# این خط متغیر پورت پلتفرم را می‌خواند و سینگ‌باکس یا ایکس‌ری نصب‌شده را استارت می‌زند
+# ۴. دستور هوشمند برای لود نهایی پورت و استارت خودکار پروژه‌ت
 CMD if [ -f "./config.json" ]; then sed -i "s/8080/$PORT/g" ./config.json; fi && \
-    if [ -f "./sing-box" ]; then ./sing-box run -c ./config.json; else bash install.sh; fi
+    if [ -f "./server.js" ]; then node server.js; else bash install.sh; fi

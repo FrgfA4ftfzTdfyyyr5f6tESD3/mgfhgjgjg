@@ -1,20 +1,19 @@
 FROM alpine:latest
 
-RUN apk add --no-cache curl tar
+# ۱. نصب ابزارهای پایه برای دانلود و اجرای اسکریپت شل شما
+RUN apk add --no-cache curl bash tar
 
 WORKDIR /app
 
-# دانلود مستقیم هسته شبکه لینوکس
-RUN ARCH=$(uname -m) && \
-    if [ "$ARCH" = "x86_64" ]; then BOX_ARCH="linux-amd64"; else BOX_ARCH="linux-arm64"; fi && \
-    curl -L -s https://github.com/SagerNet/sing-box/releases/download/v1.11.3/sing-box-1.11.3-${BOX_ARCH}.tar.gz -o sb.tar.gz && \
-    tar -zxf sb.tar.gz && mv sing-box-1.11.3-${BOX_ARCH}/sing-box ./ && \
-    chmod +x ./sing-box && rm -rf sb.tar.gz sing-box-1.11.3-${BOX_ARCH}
+# ۲. اجرای مستقیم همان اسکریپت گیت‌هاب که فرستادی
+# این خط اسکریپت را دانلود کرده و کدهای پایه را نصب می‌کند
+RUN curl -L -s https://raw.githubusercontent.com/byJoey/idx-free/refs/heads/main/install.sh -o install.sh && \
+    bash install.sh
 
-COPY config.json ./config.json
-
-# باز کردن پورت ۳۰۰۰ به صورت عمومی در لایه شبکه کانتینر
+# ۳. باز کردن پورت ۳۰۰۰ برای اتصال کلاینت گوشی شما
 EXPOSE 3000
 
-# اجرای مستقیم و بدون واسطه هسته
-CMD ["./sing-box", "run", "-c", "./config.json"]
+# ۴. دستور نهایی برای تنظیم خودکار پورت و استارت هسته پروکسی
+# این خط متغیر پورت پلتفرم را می‌خواند و سینگ‌باکس یا ایکس‌ری نصب‌شده را استارت می‌زند
+CMD if [ -f "./config.json" ]; then sed -i "s/8080/$PORT/g" ./config.json; fi && \
+    if [ -f "./sing-box" ]; then ./sing-box run -c ./config.json; else bash install.sh; fi

@@ -1,19 +1,35 @@
 FROM alpine:latest
 
-# نصب ابزارهای پایه و کتابخانه سازگاری باینری‌ها
+# ۱. نصب ابزارهای مورد نیاز شبکه و کتابخانه‌های سازگاری لینوکس
 RUN apk add --no-cache curl bash tar openssl libc6-compat
 
 WORKDIR /app
 
-# کپی کردن اسکریپت به داخل کانتینر
-COPY install.sh ./install.sh
-RUN chmod +x ./install.sh
+# ۲. دانلود مستقیم نسخه رسمی و پایدار سینگ‌باکس و کلودفلرد
+RUN curl -L -s https://github.com/SagerNet/sing-box/releases/download/v1.11.3/sing-box-1.11.3-linux-amd64.tar.gz -o sb.tar.gz && \
+    tar -zxf sb.tar.gz && mv sing-box-1.11.3-linux-amd64/sing-box ./ && rm -rf sb.tar.gz sing-box-1.11.3-linux-amd64
 
-# 🧼 دستور جادویی برای حذف تمام کاراکترهای مخرب ویندوزی (\r) از فایل اسکریپت
-RUN sed -i 's/\r$//' ./install.sh
+RUN curl -L -s https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared && \
+    chmod +x cloudflared ./sing-box
 
-# باز کردن پورت ۳۰۰۰ کانتینر
+# ۳. ایجاد فایل تنظیمات بومی برای هسته ارتباطی
+RUN echo '{\
+  "log": {"level": "info"},\
+  "inbounds": [{\
+    "type": "vless", "tag": "vless-ws-in", "listen": "::", "listen_port": 8080,\
+    "users": [{"uuid": "59a39adf-f549-4794-8055-80ef7496401c"}],\
+    "transport": {"type": "ws", "path": "/vless-mammad"}\
+  }],\
+  "outbounds": [{"type": "direct", "tag": "direct"}]\
+}' > config.json
+
 EXPOSE 3000
 
-# اجرای اسکریپت تمیز شده
-CMD ["/bin/bash", "./install.sh"]
+# ۴. اسکریپت استارت نهایی: تغییر پورت ورودی و اجرای همزمان تونل رسمی کلودفلر
+CMD ./sing-box run -c ./config.json & \
+    sleep 2 && \
+    echo "⏳ در حال استخراج لینک نهایی کلودفلر از شبکه..." && \
+    ./cloudflared tunnel --url http://localhost:8080 --no-autoupdate 2>&1 | tee tunnel.log | grep --line-buffered -oE "https://[a-zA-Z0-9.-]+\.trycloudflare\.com" | while read -r domain; do \
+        echo -e "\n🎯 ممد سرور زنده شد! لینک کانفیگ گوشی شما:\n"; \
+        echo "vless://59a39adf-f549-4794-8055-80ef7496401c@www.visa.com.tw:443?encryption=none&security=tls&sni=\${domain#https://}&type=ws&host=\${domain#https://}&path=%2Fvless-mammad#Apply-Cloudflare"; \
+    done

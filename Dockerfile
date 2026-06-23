@@ -1,47 +1,63 @@
+# ============================================================
+# VLESS-WebSocket + Cloudflare Argo Tunnel
+# Target Platform: Apply.Build (Alpine PaaS)
+# ============================================================
 FROM alpine:latest
 
-# ۱. نصب پکیج‌های پایه
-RUN apk add --no-cache curl bash tar libc6-compat
+# Install system dependencies
+# - curl: download binaries
+# - bash: run entrypoint script
+# - unzip: extract xray archive
+# - sed: CRLF cleanup
+# - grep: log parsing (BusyBox version, NO --line-buffered)
+# - libc6-compat: glibc compatibility for pre-built binaries
+# - ca-certificates: HTTPS verification
+RUN apk add --no-cache \
+    curl \
+    bash \
+    unzip \
+    sed \
+    grep \
+    libc6-compat \
+    ca-certificates
 
 WORKDIR /app
 
-# ۲. دانلود مستقیم و تمیز سینگ‌باکس و کلودفلرد
-RUN curl -L -s https://github.com/SagerNet/sing-box/releases/download/v1.11.3/sing-box-1.11.3-linux-amd64.tar.gz -o sb.tar.gz && \
-    tar -zxf sb.tar.gz && mv sing-box-1.11.3-linux-amd64/sing-box ./ && rm -rf sb.tar.gz sing-box-1.11.3-linux-amd64
+# ============================================================
+# Install Xray-core (latest release, linux/amd64)
+# ============================================================
+RUN ARCHIVE="Xray-linux-64.zip" && \
+    curl -sL "https://github.com/XTLS/Xray-core/releases/latest/download/${ARCHIVE}" \
+      -o "/tmp/${ARCHIVE}" && \
+    unzip -q "/tmp/${ARCHIVE}" -d /tmp/xray && \
+    cp /tmp/xray/xray /usr/local/bin/xray && \
+    chmod +x /usr/local/bin/xray && \
+    rm -rf /tmp/xray "/tmp/${ARCHIVE}"
 
-RUN curl -L -s https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared && \
-    chmod +x cloudflared ./sing-box
+# ============================================================
+# Install cloudflared (latest release, linux/amd64)
+# ============================================================
+RUN curl -sL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64" \
+      -o /usr/local/bin/cloudflared && \
+    chmod +x /usr/local/bin/cloudflared
 
-# ۳. ساخت کانفیگ جیسون بومی برای وب‌ساکت
-RUN echo '{\
-  "log": {"level": "info"},\
-  "inbounds": [{\
-    "type": "vless", "tag": "vless-ws-in", "listen": "::", "listen_port": 8080,\
-    "users": [{"uuid": "59a39adf-f549-4794-8055-80ef7496401c"}],\
-    "transport": {"type": "ws", "path": "/vless-mammad"}\
-  }],\
-  "outbounds": [{"type": "direct", "tag": "direct"}]\
-}' > config.json
+# ============================================================
+# Application Setup
+# ============================================================
+COPY entrypoint.sh /app/entrypoint.sh
 
-EXPOSE 3000
+# Fix CRLF line endings (Windows → Unix) to prevent:
+#   "syntax error near unexpected token"
+RUN sed -i 's/\r$//' /app/entrypoint.sh && \
+    chmod +x /app/entrypoint.sh
 
-# ۴. ساخت اسکریپت استارت هوشمند که دامنه‌ی API را سانسور می‌کند و فقط لینک واقعی را می‌گیرد
-RUN echo '#!/bin/bash\n\
-./sing-box run -c ./config.json &\n\
-sleep 2\n\
-./cloudflared tunnel --url http://localhost:8080 --no-autoupdate 2>&1 | tee tunnel.log &\n\
-echo "⏳ در حال ساخت تونل و استخراج لینک نهایی کلودفلر..."\n\
-while true; do\n\
-    DOMAIN=$(grep -oE "https://[a-zA-Z0-9.-]+\.trycloudflare\.com" tunnel.log | grep -v "api.trycloudflare.com" | head -n 1)\n\
-    if [ -n "$DOMAIN" ]; then\n\
-        echo -e "\\n🎯 ممد سرور با موفقیت زنده شد! لینک کانفیگ گوشی شما:\\n"\n\
-        echo "vless://59a39adf-f549-4794-8055-80ef7496401c@www.visa.com.tw:443?encryption=none&security=tls&sni=${DOMAIN#https://}&type=ws&host=${DOMAIN#https://}&path=%2Fvless-mammad#Apply-Tunnel"\n\
-        break\n\
-    fi\n\
-    sleep 2\n\
-done\n\
-wait -n\n\
-' > start.sh && chmod +x start.sh
+# Environment variables (override at runtime via PaaS dashboard)
+ENV INTERNAL_PORT=8080
+ENV WS_PATH=/vless
+# UUID is auto-generated at runtime if not provided:
+#   docker run -e UUID="your-uuid-here" ...
 
-# ۵. اجرای همزمان و ابدی
-CMD ["/bin/bash", "./start.sh"]
+EXPOSE 8080
+
+# Entrypoint
+CMD ["/app/entrypoint.sh"]

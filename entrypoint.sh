@@ -42,7 +42,31 @@ fi
 echo "✅ UUID: $UUID"
 
 # ─────────────────────────────────────────────
-# 2. Environment Variables
+# 2. DNS Fix (Apply.Build blocks default DNS)
+# ─────────────────────────────────────────────
+echo "🔧 Fixing DNS resolution ..."
+
+# Backup and prepend public DNS servers
+if [ -f /etc/resolv.conf ]; then
+    cp /etc/resolv.conf /etc/resolv.conf.bak 2>/dev/null
+    # Prepend Cloudflare + Google DNS (keep existing as fallback)
+    EXISTING=$(cat /etc/resolv.conf.bak 2>/dev/null | grep -v '^nameserver' || true)
+    printf "nameserver 1.1.1.1\nnameserver 8.8.8.8\nnameserver 1.0.0.1\n%s\n" "$EXISTING" > /etc/resolv.conf
+    echo "    Updated /etc/resolv.conf"
+fi
+
+# Test DNS resolution
+DNS_TEST=$(curl -s --max-time 5 -o /dev/null -w "%{http_code}" "https://api.trycloudflare.com" 2>/dev/null || echo "fail")
+echo "    DNS test (api.trycloudflare.com): HTTP $DNS_TEST"
+
+if [ "$DNS_TEST" = "fail" ]; then
+    echo "    ⚠️  DNS may still be unreachable. Trying /etc/hosts fallback..."
+    echo "" >> /etc/resolv.conf
+    echo "nameserver 9.9.9.9" >> /etc/resolv.conf
+fi
+
+# ─────────────────────────────────────────────
+# 3. Environment Variables
 # ─────────────────────────────────────────────
 INTERNAL_PORT="${INTERNAL_PORT:-8080}"
 WS_PATH="${WS_PATH:-/vless}"
@@ -50,7 +74,7 @@ TUNNEL_LOG="/tmp/cloudflared.log"
 XRAY_CONFIG="/app/config.json"
 
 # ─────────────────────────────────────────────
-# 3. Generate Xray Configuration (VLESS + WS)
+# 4. Generate Xray Configuration (VLESS + WS)
 # ─────────────────────────────────────────────
 cat > "$XRAY_CONFIG" <<XRAYEOF
 {
@@ -114,11 +138,21 @@ echo "✅ Xray-core is running (PID: $XRAY_PID)"
 # 5. Start cloudflared Argo Tunnel
 # ─────────────────────────────────────────────
 echo "🚀 Starting Cloudflare Argo Tunnel ..."
+# Capture both stdout and stderr (cloudflared logs to stderr in some versions)
 cloudflared tunnel --url "http://127.0.0.1:${INTERNAL_PORT}" \
   --no-autoupdate \
   --loglevel=info \
-  > "$TUNNEL_LOG" 2>&1 &
+  >> "$TUNNEL_LOG" 2>&1 &
 CF_PID=$!
+echo "    cloudflared PID: $CF_PID"
+
+# Brief pause to let cloudflared initialize
+sleep 3
+
+# Show initial log output for debugging
+echo "    --- Initial cloudflared output: ---"
+cat "$TUNNEL_LOG" 2>/dev/null | head -20
+echo "    --- End initial output ---"
 
 echo "✅ cloudflared started (PID: $CF_PID)"
 
@@ -126,26 +160,47 @@ echo "✅ cloudflared started (PID: $CF_PID)"
 # 6. Wait for Tunnel URL (filter api.trycloudflare.com)
 # ─────────────────────────────────────────────
 echo "⏳ Waiting for Cloudflare Argo Tunnel URL ..."
+echo "    (Polling /tmp/cloudflared.log every 2s, max 90s)"
 
 TUNNEL_URL=""
-MAX_RETRIES=60
+MAX_RETRIES=45
 RETRY=0
 
 while [ $RETRY -lt $MAX_RETRIES ]; do
-    if [ -f "$TUNNEL_LOG" ]; then
-        # BusyBox grep — NO --line-buffered (not supported)
-        # Match lines containing "trycloudflare.com"
-        CANDIDATE=$(grep -oE 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' "$TUNNEL_LOG" | \
-                    grep -v 'api\.trycloudflare\.com' | \
-                    head -n 1)
+    if [ -f "$TUNNEL_LOG" ] && [ -s "$TUNNEL_LOG" ]; then
+        # Method 1: Parse JSON log (newer cloudflared versions)
+        # Look for "hostname" field in JSON lines
+        CANDIDATE=$(grep -o '"hostname":"[^"]*trycloudflare\.com"' "$TUNNEL_LOG" 2>/dev/null | \
+                    head -n 1 | \
+                    sed 's/"hostname":"//;s/"//' | \
+                    sed 's|api\.||')
+
+        # Method 2: Parse plain text log (older versions)
+        if [ -z "$CANDIDATE" ]; then
+            CANDIDATE=$(grep -oE 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' "$TUNNEL_LOG" 2>/dev/null | \
+                        grep -v 'api\.trycloudflare\.com' | \
+                        head -n 1 | \
+                        sed 's|https://||')
+        fi
+
+        # Method 3: Fallback - any trycloudflare.com domain
+        if [ -z "$CANDIDATE" ]; then
+            CANDIDATE=$(grep -oE '[a-zA-Z0-9.-]+\.trycloudflare\.com' "$TUNNEL_LOG" 2>/dev/null | \
+                        grep -v 'api\.trycloudflare\.com' | \
+                        head -n 1)
+        fi
 
         if [ -n "$CANDIDATE" ]; then
-            TUNNEL_URL="$CANDIDATE"
+            TUNNEL_URL="https://${CANDIDATE}"
+            echo "    ✅ Tunnel URL detected: $TUNNEL_URL (after $((RETRY * 2))s)"
             break
         fi
     fi
 
     RETRY=$((RETRY + 1))
+    if [ $((RETRY % 5)) -eq 0 ]; then
+        echo "    ⏱️  Still waiting... ($((RETRY * 2))s / $((MAX_RETRIES * 2))s)"
+    fi
     sleep 2
 done
 

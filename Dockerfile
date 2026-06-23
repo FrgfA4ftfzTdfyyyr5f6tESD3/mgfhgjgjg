@@ -25,11 +25,14 @@ RUN echo '{\
 
 EXPOSE 3000
 
-# ۴. اسکریپت استارت نهایی: تغییر پورت ورودی و اجرای همزمان تونل رسمی کلودفلر
+# ۴. اسکریپت استارت نهایی با لود مستقیم لاگ (حذف آپشن line-buffered که بیزی‌باکس را منفجر می‌کرد)
 CMD ./sing-box run -c ./config.json & \
     sleep 2 && \
     echo "⏳ در حال استخراج لینک نهایی کلودفلر از شبکه..." && \
-    ./cloudflared tunnel --url http://localhost:8080 --no-autoupdate 2>&1 | tee tunnel.log | grep --line-buffered -oE "https://[a-zA-Z0-9.-]+\.trycloudflare\.com" | while read -r domain; do \
-        echo -e "\n🎯 ممد سرور زنده شد! لینک کانفیگ گوشی شما:\n"; \
-        echo "vless://59a39adf-f549-4794-8055-80ef7496401c@www.visa.com.tw:443?encryption=none&security=tls&sni=\${domain#https://}&type=ws&host=\${domain#https://}&path=%2Fvless-mammad#Apply-Cloudflare"; \
+    ./cloudflared tunnel --url http://localhost:8080 --no-autoupdate 2>&1 | while read -r line; do \
+        if echo "$line" | grep -q "trycloudflare.com"; then \
+            domain=$(echo "$line" | grep -oE "https://[a-zA-Z0-9.-]+\.trycloudflare\.com"); \
+            echo -e "\n🎯 ممد سرور با موفقیت زنده شد! لینک کانفیگ گوشی شما:\n"; \
+            echo "vless://59a39adf-f549-4794-8055-80ef7496401c@www.visa.com.tw:443?encryption=none&security=tls&sni=${domain#https://}&type=ws&host=${domain#https://}&path=%2Fvless-mammad#Apply-Cloudflare"; \
+        fi \
     done
